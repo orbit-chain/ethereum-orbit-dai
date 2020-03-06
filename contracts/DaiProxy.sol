@@ -5,6 +5,9 @@ contract ReserveLike {
 }
 
 contract WrappedDaiLike {
+    function setProxy(address) public;
+    function setReserve(address) public;
+
     uint public totalSupply;
     function approve(address, uint) public returns (bool);
 
@@ -46,7 +49,7 @@ contract VatLike {
 }
 
 contract DaiProxy {
-    string public constant version = "0303";
+    string public constant version = "0306a";
 
     // --- Owner ---
     address public owner;
@@ -63,21 +66,26 @@ contract DaiProxy {
         emit SetOwner(_owner);
     }
 
-    // --- Paused ---
-    bool public paused = false;
+    // --- State ---
+    uint public state = 0;  // 0 : 시작 전, 1 : 작동 중, 2 : 사망
 
-    modifier notPaused {
-        require(!paused);
+    modifier notStarted {
+        require(state == 0);
         _;
     }
 
-    // 같은 EDai / ODai를 사용하는 새로운 Proxy가 생기면 켜야 함
-    function setPaused(bool _paused) public onlyOwner {
-        paused = _paused;
+    modifier notPaused {
+        require(state == 1);
+        _;
     }
 
     // --- Math ---
     uint constant ONE = 10 ** 27;
+
+    function add(uint a, uint b) private pure returns (uint) {
+        require(a <= uint(-1) - b);
+        return a + b;
+    }
 
     function sub(uint a, uint b) private pure returns (uint) {
         require(a >= b);
@@ -92,6 +100,13 @@ contract DaiProxy {
     function div(uint a, uint b) private pure returns (uint) {
         require(b != 0);
         return a / b;
+    }
+
+    function ceil(uint a, uint b) private pure returns (uint) {
+        require(b != 0);
+
+        uint r = a / b;
+        return a > r * b ? r + 1 : r;
     }
 
     // --- Contracts & Constructor ---
@@ -132,102 +147,140 @@ contract DaiProxy {
 
         Reserve = ReserveLike(reserve);
 
+        EDai.setReserve(reserve);
+        ODai.setReserve(reserve);
+
         // approve for Reserve.depositToken
         require(EDai.approve(reserve, uint(-1)));
         require(ODai.approve(reserve, uint(-1)));
     }
 
-    // --- Integration ---
-    function grab(uint dai) private returns (uint, uint) {
-        // sender의 Dai를 뺏어온다.
-        require(Dai.transferFrom(msg.sender, address(this), dai));
+    modifier onlyEDai {
+        require(msg.sender == address(EDai));
+        _;
+    }
 
-        // 가져온 Dai를 소각하고 Vat 생태계로 보낸다.
+    modifier onlyODai {
+        require(msg.sender == address(ODai));
+        _;
+    }
+
+    // --- Integration ---
+    function grabDai(uint dai) private {
+        require(Dai.transferFrom(msg.sender, address(this), dai));
         Join.join(address(this), dai);
 
-        // Vat에 있는 Dai를 Pot에 넣는다.
-        // 버림이 발생하므로 Vat에 미세한 수량이 남는다.
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-        uint wad = div(mul(dai, ONE), chi);
-        Pot.join(wad);
+        uint vat = Vat.dai(address(this));
 
-        return (wad, mul(wad, chi) / ONE);
+        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
+        Pot.join(div(vat, chi));
+    }
+
+    function fitVat(uint dai) private {
+        uint vat = Vat.dai(address(this));
+
+        uint req = mul(dai, ONE);
+
+        if (req > vat) {
+            uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
+            uint pot = ceil(req - vat, chi);
+
+            Pot.exit(pot);
+        }
     }
 
     function depositEDai(address to, uint dai, address extraToAddr) public notPaused {
-        (, uint wai) = grab(dai);
-        EDai.mint(address(this), wai);
-        Reserve.depositToken(address(EDai), to, wai, extraToAddr);
+        require(dai > 0);
+
+        grabDai(dai);
+
+        EDai.mint(address(this), dai);
+        Reserve.depositToken(address(EDai), to, dai, extraToAddr);
     }
 
     function depositODai(address to, uint dai, address extraToAddr) public notPaused {
-        (uint wad, ) = grab(dai);
+        require(dai > 0);
+
+        grabDai(dai);
+
+        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
+        uint wad = div(mul(dai, ONE), chi);
+
         ODai.mint(address(this), wad);
         Reserve.depositToken(address(ODai), to, wad, extraToAddr);
     }
 
     function swapFromEDai(address from, address to, uint dai) private {
-        // 얼마나 돌려줄까?
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-        uint wad = div(mul(dai, ONE), chi);  // 내림
-
         EDai.burn(from, dai);
 
-        Pot.exit(wad);
-
-        uint res = mul(wad, chi) / ONE;
-        Join.exit(to, res);
-    }
-
-    function swapFromODai(address from, address to, uint wad) private {
-        // 얼마나 돌려줄까?
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-
-        // EDai가 차지한 수량 : eSupply * ONE / chi
-        // ODai가 가져도 되는 수량(oWad) : pie - eSupply * ONE / chi
-
-        // 실제 ODai 수량 : oSupply
-        // 유저가 빼려는 wad의 비율 : wad / oSupply
-        // 유저가 가져갈 수량 : oWad * wad / oSupply
-
-        uint pie = Pot.pie(address(this));
-        uint eSupply = EDai.totalSupply();
-        uint oSupply = ODai.totalSupply();
-
-        uint oWad = (pie * chi - eSupply * ONE) / chi;
-        uint res = div(mul(oWad, wad), oSupply);
-
-        ODai.burn(from, wad);
-
-        Pot.exit(res);
-
-        uint dai = mul(res, chi) / ONE;
+        fitVat(dai);
         Join.exit(to, dai);
     }
 
-    function withdrawEDai(address to, uint dai) public notPaused {
+    function swapFromODai(address from, address to, uint wad) private {
+        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
+
+        uint pie = Pot.pie(address(this));
+        uint vat = Vat.dai(address(this));
+
+        uint remainVat = sub(add(vat, mul(pie, chi)), mul(EDai.totalSupply(), ONE));
+
+        // Avoid integer overflow
+        uint one = ONE;
+
+        // always require wad > 0
+        uint r = uint(-1) / wad;
+
+        while (remainVat > r) {
+            remainVat /= 10;
+            one /= 10;
+        }
+
+        // burn하면서 totalSupply가 변경되므로 미리 계산
+        uint dai = div(mul(remainVat, wad), mul(one, ODai.totalSupply()));
+
+        ODai.burn(from, wad);
+
+        fitVat(dai);
+        Join.exit(to, dai);
+    }
+
+    function withdrawEDai(address to, uint dai) public onlyEDai notPaused {
+        require(dai > 0);
         swapFromEDai(address(Reserve), to, dai);
     }
 
-    function withdrawODai(address to, uint wad) public notPaused {
+    function withdrawODai(address to, uint wad) public onlyODai notPaused {
+        require(wad > 0);
         swapFromODai(address(Reserve), to, wad);
     }
 
-    function swapToEDai(uint dai) public notPaused {  // swap해서 다른 유저에게 주려는 시도가 있을까?
-        (, uint wai) = grab(dai);
-        EDai.mint(msg.sender, wai);
+    function swapToEDai(uint dai) public notPaused {
+        require(dai > 0);
+
+        grabDai(dai);
+
+        EDai.mint(msg.sender, dai);
     }
 
     function swapToODai(uint dai) public notPaused {
-        (uint wad, ) = grab(dai);
-        ODai.mint(msg.sender, wad);
+        require(dai > 0);
+
+        grabDai(dai);
+
+        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
+        uint wad = div(mul(dai, ONE), chi);
+
+        if (wad > 0) ODai.mint(msg.sender, wad);
     }
 
     function swapFromEDai(uint dai) public notPaused {
+        require(dai > 0);
         swapFromEDai(msg.sender, msg.sender, dai);
     }
 
     function swapFromODai(uint wad) public notPaused {
+        require(wad > 0);
         swapFromODai(msg.sender, msg.sender, wad);
     }
 
@@ -239,38 +292,44 @@ contract DaiProxy {
         _;
     }
 
+    // 새로운 프록시가 발행되었음을 알린다
     function setNewProxy(address proxy) public onlyOwner {
         NewProxy = DaiProxy(proxy);
     }
 
-    function exitPot(address to) public onlyOwner {
+    // 프록시의 작동을 완전히 중지하고 돈을 전부 다른 지갑으로 옮긴다
+    function killProxy(address to) public notPaused onlyOwner {
+        state = 2;
+
         if (now > Pot.rho()) Pot.drip();
 
-        // 지금 있는 것을 다 꺼낸다
-        uint pie = Pot.pie(address(this));
-        Pot.exit(pie);  // Pot이 텅 비고 Vat으로 감
-
-        uint vat = Vat.dai(address(this));
-        Join.exit(to, vat / ONE);
+        Pot.exit(Pot.pie(address(this)));
+        Join.exit(to, Vat.dai(address(this)) / ONE);
     }
 
-    function movePot() public onlyNewProxy returns (uint) {
+    // 새로 생긴 프록시로 자산을 옮긴다.
+    function migrateProxy() public notPaused onlyNewProxy {
+        state = 2;
+
+        EDai.setProxy(address(NewProxy));
+        ODai.setProxy(address(NewProxy));
+
         if (now > Pot.rho()) Pot.drip();
 
-        // 지금 있는 것을 다 꺼낸다
-        uint pie = Pot.pie(address(this));
-        Pot.exit(pie);  // Pot이 텅 비고 Vat으로 감
-
-        uint vat = Vat.dai(address(this));
-        Vat.move(address(this), address(NewProxy), vat);
-
-        return pie;  // 이 수량만큼 다시 넣어 주면 됨
+        Pot.exit(Pot.pie(address(this)));
+        Vat.move(address(this), address(NewProxy), Vat.dai(address(this)));
     }
 
-    function fillPot(address oldProxy) public onlyOwner {
-        if (now > Pot.rho()) Pot.drip();
+    // 프록시를 켠다.
+    function startProxy(address oldProxy) public notStarted onlyOwner {
+        state = 1;
 
-        uint pie = DaiProxy(oldProxy).movePot();
-        Pot.join(pie);
+        if (oldProxy != address(0)) {
+            DaiProxy(oldProxy).migrateProxy();
+            uint vat = Vat.dai(address(this));
+
+            uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
+            Pot.join(div(vat, chi));
+        }
     }
 }

@@ -9,7 +9,7 @@ contract ProxyLike {
 }
 
 contract WrappedDai {
-    string public constant version = "0303";
+    string public constant version = "0306";
 
     // --- Owner ---
     address public owner;
@@ -38,22 +38,29 @@ contract WrappedDai {
     }
 
     // --- Proxy ---
-    ProxyLike Proxy;
+    ProxyLike public Proxy;
 
     modifier onlyProxy {
         require(msg.sender == address(Proxy));
         _;
     }
 
-    event SetProxy(address proxy);
+    modifier onlyOwnerOrProxy {
+        require(msg.sender == owner || msg.sender == address(Proxy));
+        _;
+    }
 
-    function setProxy(address _proxy) public onlyOwner {
+    // 최초 발행 시에는 Owner, 그 뒤에는 Proxy가 호출
+    function setProxy(address _proxy) public onlyOwnerOrProxy {
         Proxy = ProxyLike(_proxy);
-        emit SetProxy(_proxy);
     }
 
     // --- Contracts & Constructor ---
-    ReserveLike Reserve;
+    ReserveLike public Reserve;
+
+    function setReserve(address reserve) public onlyProxy {
+        Reserve = ReserveLike(reserve);
+    }
 
     constructor() public {
         owner = msg.sender;
