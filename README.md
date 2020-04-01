@@ -100,6 +100,78 @@
 - 1 oDai = (total value of the Pot - total value of eDai) / (total issued amount of oDai) Dai
 - The value of the oDai always rises.
 
+# Contract Interface
+
+### swapToEDai
+
+    function swapToEDai(uint dai) public notPaused
+
+- Interface to execute when converting Dai to eDai
+- params
+    - `dai` : Dai quantity to convert to eDai
+
+### swapToODai
+
+    function swapToODai(uint dai) public notPaused
+
+- Interface to execute when converting Dai to oDai
+- params
+    - `dai` : Dai quantity to convert to oDai
+
+### swapFromEDai
+
+    function swapFromEDai(uint dai) public notPaused
+
+- Interface to execute when converting eDai to Dai
+- params
+    - `dai` : eDai quantity to convert to Dai
+
+### swapFromODai
+
+    function swapFromODai(uint wad) public notPaused
+
+- Interface to execute when converting oDai to Dai
+- params
+    - `wad` : oDai quantity to convert to Dai
+
+### depositEDai
+
+    function depositEDai(address to, uint dai, address extraToAddr) public notPaused
+
+- Interface to execute converting Dai to eDai and to deposit eDai in Orbit Reserve Contract at the same time. (including fallback)
+- params
+    - `to` :  orbit chain destination address
+    - `dai` : Dai quantity to convert to Dai
+    - `extraToAddr` : orbit chain additional destination address (optional)
+
+### depositODai
+
+    function depositODai(address to, uint dai, address extraToAddr) public notPaused
+
+- Interface to execute converting Dai to oDai and to deposit oDai in Orbit Reserve Contract at the same time (including fallback)
+- params
+    - `to` : orbit chain destination address
+    - `dai` : Dai quantity to convert to Dai
+    - `extraToAddr` : orbit chain additional destination address (optional)
+
+### withdrawEDai
+
+    function withdrawEDai(address to, uint dai) public onlyEDai notPaused
+
+- Interface that Orbit Reserve Contract calls to convert eDai to Dai and withdraws.
+- params
+    - `to` : ethereum chain destination address
+    - `dai` : eDai quantity to convert to Dai
+
+### withdrawODai
+
+    function withdrawODai(address to, uint wad) public onlyODai notPaused
+
+- Interface that Orbit Reserve Contract calls to convert EDai to Dai and withdraws.
+- params
+    - `to` : ethereum chain destination address
+    - `wad` : oDai quantity to convert to eDai
+
 # Use Case
 
 ### Trinito
