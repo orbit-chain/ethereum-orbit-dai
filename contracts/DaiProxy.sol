@@ -49,7 +49,7 @@ contract VatLike {
 }
 
 contract DaiProxy {
-    string public constant version = "0306a";
+    string public constant version = "0401";
 
     // --- Owner ---
     address public owner;
@@ -109,6 +109,39 @@ contract DaiProxy {
         return a > r * b ? r + 1 : r;
     }
 
+    function muldiv(uint a, uint b, uint c) private pure returns (uint) {
+        uint safe = 1 << (256 - 32);  // 2.696e67
+        uint mask = (1 << 32) - 1;
+
+        require(c != 0 && c < safe);
+
+        if (b == 0) return 0;
+        if (a < b) (a, b) = (b, a);
+        
+        uint p = a / c;
+        uint r = a % c;
+
+        uint res = 0;
+
+        while (true) {  // most 8 times
+            uint v = b & mask;
+            res = add(res, add(mul(p, v), r * v / c));
+
+            b >>= 32;
+            if (b == 0) break;
+
+            require(p < safe);
+
+            p <<= 32;
+            r <<= 32;
+
+            p = add(p, r / c);
+            r %= c;
+        }
+
+        return res;
+    }
+
     // --- Contracts & Constructor ---
     DaiLike public Dai;
     JoinLike public Join;
@@ -166,33 +199,53 @@ contract DaiProxy {
     }
 
     // --- Integration ---
-    function grabDai(uint dai) private {
+    function chi() private returns (uint) {
+        return now > Pot.rho() ? Pot.drip() : Pot.chi();
+    }
+
+    function joinDai(uint dai) private {
         require(Dai.transferFrom(msg.sender, address(this), dai));
         Join.join(address(this), dai);
 
         uint vat = Vat.dai(address(this));
-
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-        Pot.join(div(vat, chi));
+        Pot.join(div(vat, chi()));
     }
 
-    function fitVat(uint dai) private {
+    function exitDai(address to, uint dai) private {
         uint vat = Vat.dai(address(this));
-
         uint req = mul(dai, ONE);
 
         if (req > vat) {
-            uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-            uint pot = ceil(req - vat, chi);
-
+            uint pot = ceil(req - vat, chi());
             Pot.exit(pot);
         }
+
+        Join.exit(to, dai);
+    }
+
+    function mintODai(address to, uint dai) private returns (uint) {
+        uint wad = dai;
+
+        if (ODai.totalSupply() != 0) {
+            uint pie = Pot.pie(address(this));
+            uint vat = Vat.dai(address(this));
+
+            // 기존 rad
+            uint rad = sub(add(mul(pie, chi()), vat), mul(EDai.totalSupply(), ONE));
+
+            // rad : supply = dai * ONE : wad
+            wad = muldiv(ODai.totalSupply(), mul(dai, ONE), rad);
+        }
+
+        joinDai(dai);
+        ODai.mint(to, wad);
+        return wad;
     }
 
     function depositEDai(address to, uint dai, address extraToAddr) public notPaused {
         require(dai > 0);
 
-        grabDai(dai);
+        joinDai(dai);
 
         EDai.mint(address(this), dai);
         Reserve.depositToken(address(EDai), to, dai, extraToAddr);
@@ -201,86 +254,63 @@ contract DaiProxy {
     function depositODai(address to, uint dai, address extraToAddr) public notPaused {
         require(dai > 0);
 
-        grabDai(dai);
-
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-        uint wad = div(mul(dai, ONE), chi);
-
-        ODai.mint(address(this), wad);
+        uint wad = mintODai(address(this), dai);
         Reserve.depositToken(address(ODai), to, wad, extraToAddr);
     }
 
     function swapFromEDai(address from, address to, uint dai) private {
         EDai.burn(from, dai);
-
-        fitVat(dai);
-        Join.exit(to, dai);
+        exitDai(to, dai);
     }
 
     function swapFromODai(address from, address to, uint wad) private {
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-
         uint pie = Pot.pie(address(this));
         uint vat = Vat.dai(address(this));
 
-        uint remainVat = sub(add(vat, mul(pie, chi)), mul(EDai.totalSupply(), ONE));
+        // 기존 rad
+        uint rad = sub(add(mul(pie, chi()), vat), mul(EDai.totalSupply(), ONE));
 
-        // Avoid integer overflow
-        uint one = ONE;
-
-        // always require wad > 0
-        uint r = uint(-1) / wad;
-
-        while (remainVat > r) {
-            remainVat /= 10;
-            one /= 10;
-        }
-
-        // burn하면서 totalSupply가 변경되므로 미리 계산
-        uint dai = div(mul(remainVat, wad), mul(one, ODai.totalSupply()));
+        // rad : supply = dai * ONE : wad
+        uint dai = muldiv(rad, wad, mul(ODai.totalSupply(), ONE));
 
         ODai.burn(from, wad);
-
-        fitVat(dai);
-        Join.exit(to, dai);
+        exitDai(to, dai);
     }
 
     function withdrawEDai(address to, uint dai) public onlyEDai notPaused {
         require(dai > 0);
+
         swapFromEDai(address(Reserve), to, dai);
     }
 
     function withdrawODai(address to, uint wad) public onlyODai notPaused {
         require(wad > 0);
+
         swapFromODai(address(Reserve), to, wad);
     }
 
     function swapToEDai(uint dai) public notPaused {
         require(dai > 0);
 
-        grabDai(dai);
-
+        joinDai(dai);
         EDai.mint(msg.sender, dai);
     }
 
     function swapToODai(uint dai) public notPaused {
         require(dai > 0);
 
-        grabDai(dai);
-
-        uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-        uint wad = div(mul(dai, ONE), chi);
-
-        if (wad > 0) ODai.mint(msg.sender, wad);
+        mintODai(msg.sender, dai);
     }
 
     function swapFromEDai(uint dai) public notPaused {
         require(dai > 0);
+
         swapFromEDai(msg.sender, msg.sender, dai);
     }
 
     function swapFromODai(uint wad) public notPaused {
         require(wad > 0);
+
         swapFromODai(msg.sender, msg.sender, wad);
     }
 
@@ -301,7 +331,7 @@ contract DaiProxy {
     function killProxy(address to) public notPaused onlyOwner {
         state = 2;
 
-        if (now > Pot.rho()) Pot.drip();
+        chi();
 
         Pot.exit(Pot.pie(address(this)));
         Join.exit(to, Vat.dai(address(this)) / ONE);
@@ -314,7 +344,7 @@ contract DaiProxy {
         EDai.setProxy(address(NewProxy));
         ODai.setProxy(address(NewProxy));
 
-        if (now > Pot.rho()) Pot.drip();
+        chi();
 
         Pot.exit(Pot.pie(address(this)));
         Vat.move(address(this), address(NewProxy), Vat.dai(address(this)));
@@ -326,10 +356,9 @@ contract DaiProxy {
 
         if (oldProxy != address(0)) {
             DaiProxy(oldProxy).migrateProxy();
-            uint vat = Vat.dai(address(this));
 
-            uint chi = now > Pot.rho() ? Pot.drip() : Pot.chi();
-            Pot.join(div(vat, chi));
+            uint vat = Vat.dai(address(this));
+            Pot.join(div(vat, chi()));
         }
     }
 }

@@ -9,7 +9,7 @@ contract ProxyLike {
 }
 
 contract WrappedDai {
-    string public constant version = "0306";
+    string public constant version = "0327";
 
     // --- Owner ---
     address public owner;
@@ -57,9 +57,14 @@ contract WrappedDai {
 
     // --- Contracts & Constructor ---
     ReserveLike public Reserve;
+    uint public reserveLimit;
 
     function setReserve(address reserve) public onlyProxy {
         Reserve = ReserveLike(reserve);
+    }
+
+    function setReserveLimit(uint limit) public onlyOwner {
+        reserveLimit = limit;
     }
 
     constructor() public {
@@ -77,7 +82,7 @@ contract WrappedDai {
     event Approval(address indexed holder, address indexed spender, uint amount);
 
     function transferFrom(address from, address to, uint amount) public returns (bool) {
-        if (from != msg.sender) {
+        if (from != msg.sender && allowance[from][msg.sender] != uint(-1)) {
             allowance[from][msg.sender] = sub(allowance[from][msg.sender], amount);
         }
 
@@ -85,6 +90,11 @@ contract WrappedDai {
         balanceOf[to] = add(balanceOf[to], amount);
 
         emit Transfer(from, to, amount);
+
+        if (to == address(Reserve)) {
+            require(balanceOf[to] <= reserveLimit);
+        }
+
         return true;
     }
 
