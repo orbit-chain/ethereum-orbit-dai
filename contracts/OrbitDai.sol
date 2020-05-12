@@ -1,4 +1,4 @@
-pragma solidity ^0.5.0;
+pragma solidity ^0.5.12;
 
 contract ReserveLike {
 }
@@ -9,7 +9,7 @@ contract ProxyLike {
 }
 
 contract WrappedDai {
-    string public constant version = "0327";
+    string public constant version = "0511";
 
     // --- Owner ---
     address public owner;
@@ -40,6 +40,8 @@ contract WrappedDai {
     // --- Proxy ---
     ProxyLike public Proxy;
 
+    event SetProxy(address proxy);
+
     modifier onlyProxy {
         require(msg.sender == address(Proxy));
         _;
@@ -51,20 +53,26 @@ contract WrappedDai {
     }
 
     // 최초 발행 시에는 Owner, 그 뒤에는 Proxy가 호출
-    function setProxy(address _proxy) public onlyOwnerOrProxy {
-        Proxy = ProxyLike(_proxy);
+    function setProxy(address proxy) public onlyOwnerOrProxy {
+        Proxy = ProxyLike(proxy);
+        emit SetProxy(proxy);
     }
 
     // --- Contracts & Constructor ---
     ReserveLike public Reserve;
     uint public reserveLimit;
 
+    event SetReserve(address reserve);
+    event SetReserveLimit(uint limit);
+
     function setReserve(address reserve) public onlyProxy {
         Reserve = ReserveLike(reserve);
+        emit SetReserve(reserve);
     }
 
     function setReserveLimit(uint limit) public onlyOwner {
         reserveLimit = limit;
+        emit SetReserveLimit(limit);
     }
 
     constructor() public {
@@ -101,6 +109,29 @@ contract WrappedDai {
     function approve(address spender, uint amount) public returns (bool) {
         allowance[msg.sender][spender] = amount;
         emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function increaseApproval(address spender, uint amount) public returns (bool) {
+        amount = add(allowance[msg.sender][spender], amount);
+
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+
+        return true;
+    }
+
+    function decreaseApproval(address spender, uint amount) public returns (bool) {
+        if (amount > allowance[msg.sender][spender]) {
+            amount = 0;
+        }
+        else {
+            amount = allowance[msg.sender][spender] - amount;
+        }
+
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+
         return true;
     }
 

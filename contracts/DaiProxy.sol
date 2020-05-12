@@ -1,4 +1,4 @@
-pragma solidity ^0.5.0;
+pragma solidity ^0.5.12;
 
 contract ReserveLike {
     function depositToken(address, address, uint, address) public;
@@ -49,7 +49,7 @@ contract VatLike {
 }
 
 contract DaiProxy {
-    string public constant version = "0401";
+    string public constant version = "0511";
 
     // --- Owner ---
     address public owner;
@@ -67,15 +67,17 @@ contract DaiProxy {
     }
 
     // --- State ---
-    uint public state = 0;  // 0 : 시작 전, 1 : 작동 중, 2 : 사망
+    enum State { Ready, Running, Killed }
+
+    State public state = State.Ready;
 
     modifier notStarted {
-        require(state == 0);
+        require(state == State.Ready);
         _;
     }
 
     modifier notPaused {
-        require(state == 1);
+        require(state == State.Running);
         _;
     }
 
@@ -153,6 +155,8 @@ contract DaiProxy {
     WrappedDaiLike public EDai;
     WrappedDaiLike public ODai;
 
+    event SetReserve(address reserve);
+
     constructor(address dai, address join, address pot, address vat, address eDai, address oDai) public {
         owner = msg.sender;
 
@@ -186,6 +190,8 @@ contract DaiProxy {
         // approve for Reserve.depositToken
         require(EDai.approve(reserve, uint(-1)));
         require(ODai.approve(reserve, uint(-1)));
+
+        emit SetReserve(reserve);
     }
 
     modifier onlyEDai {
@@ -317,6 +323,10 @@ contract DaiProxy {
     // --- Migration ---
     DaiProxy public NewProxy;
 
+    event SetNewProxy(address proxy);
+    event StartProxy(address prev);
+    event KillProxy(address next, bool mig);
+
     modifier onlyNewProxy {
         require(msg.sender == address(NewProxy));
         _;
@@ -325,21 +335,24 @@ contract DaiProxy {
     // 새로운 프록시가 발행되었음을 알린다
     function setNewProxy(address proxy) public onlyOwner {
         NewProxy = DaiProxy(proxy);
+        emit SetNewProxy(proxy);
     }
 
     // 프록시의 작동을 완전히 중지하고 돈을 전부 다른 지갑으로 옮긴다
     function killProxy(address to) public notPaused onlyOwner {
-        state = 2;
+        state = State.Killed;
 
         chi();
 
         Pot.exit(Pot.pie(address(this)));
         Join.exit(to, Vat.dai(address(this)) / ONE);
+
+        emit KillProxy(to, false);
     }
 
     // 새로 생긴 프록시로 자산을 옮긴다.
     function migrateProxy() public notPaused onlyNewProxy {
-        state = 2;
+        state = State.Killed;
 
         EDai.setProxy(address(NewProxy));
         ODai.setProxy(address(NewProxy));
@@ -348,11 +361,13 @@ contract DaiProxy {
 
         Pot.exit(Pot.pie(address(this)));
         Vat.move(address(this), address(NewProxy), Vat.dai(address(this)));
+
+        emit KillProxy(address(NewProxy), true);
     }
 
     // 프록시를 켠다.
     function startProxy(address oldProxy) public notStarted onlyOwner {
-        state = 1;
+        state = State.Running;
 
         if (oldProxy != address(0)) {
             DaiProxy(oldProxy).migrateProxy();
@@ -360,5 +375,7 @@ contract DaiProxy {
             uint vat = Vat.dai(address(this));
             Pot.join(div(vat, chi()));
         }
+
+        emit StartProxy(oldProxy);
     }
 }

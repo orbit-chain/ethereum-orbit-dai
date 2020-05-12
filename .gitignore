@@ -1,0 +1,17 @@
+### IDEs
+.idea
+.vscode
+
+### Temporary Files
+*.swp
+*.tmp
+*.log
+logs
+.DS_Store
+
+### Node.js
+node_modules
+
+### Buidler Files
+cache
+artifacts
