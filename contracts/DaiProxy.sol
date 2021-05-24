@@ -1,7 +1,7 @@
 pragma solidity ^0.5.12;
 
 contract ReserveLike {
-    function depositToken(address, address, uint, address) public;
+    function depositToken(address, string memory, bytes memory, uint) public;
 }
 
 contract WrappedDaiLike {
@@ -248,20 +248,20 @@ contract DaiProxy {
         return wad;
     }
 
-    function depositEDai(address to, uint dai, address extraToAddr) public notPaused {
+    function depositEDai(string memory toChain, uint dai, bytes memory to) public notPaused {
         require(dai > 0);
 
         joinDai(dai);
 
         EDai.mint(address(this), dai);
-        Reserve.depositToken(address(EDai), to, dai, extraToAddr);
+        Reserve.depositToken(address(EDai), toChain, to, dai);
     }
 
-    function depositODai(address to, uint dai, address extraToAddr) public notPaused {
+    function depositODai(string memory toChain, uint dai, bytes memory to) public notPaused {
         require(dai > 0);
 
         uint wad = mintODai(address(this), dai);
-        Reserve.depositToken(address(ODai), to, wad, extraToAddr);
+        Reserve.depositToken(address(ODai), toChain, to, wad);
     }
 
     function swapFromEDai(address from, address to, uint dai) private {
